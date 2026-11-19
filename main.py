@@ -7,42 +7,45 @@ gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw, Gio, GLib
 
+APP_DIR = os.path.expanduser("~/.local/share/right-note")
+DEFAULT_FILE = os.path.join(APP_DIR, "current.rnote")
+
 
 class RightNoteApp(Adw.Application):
     def __init__(self):
         super().__init__(application_id='com.daniil.rightnote')
         self.connect('activate', self.on_activate)
+        os.makedirs(APP_DIR, exist_ok=True)
 
     def on_activate(self, app):
         self.win = Adw.ApplicationWindow(application=app)
-        self.win.set_title("Right Note")
-        self.win.set_default_size(950, 600)
+        self.win.set_default_size(450, 350)
+        self.win.connect("close-request", self.on_close)
 
-        # Основной горизонтальный layout: сайдбар слева + редактор справа
+        self.current_file = DEFAULT_FILE
+        self.dirty = False
+
+        # ---- HeaderBar (за неё можно тащить окно) ----
+        header = Adw.HeaderBar()
+        toolbar_view = Adw.ToolbarView()
+        toolbar_view.add_top_bar(header)
+
+        # Основной layout: сайдбар + редактор
         main = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.win.set_content(main)
+        toolbar_view.set_content(main)
+        self.win.set_content(toolbar_view)
 
-        # ---- САЙДБАР ----
+        # ---- Сайдбар ----
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
 
-        sidebar_title = Gtk.Label(label="Right Note", xalign=0)
-        sidebar_title.add_css_class("title-4")
-        sidebar_title.set_margin_top(12)
-        sidebar_title.set_margin_bottom(12)
-        sidebar_title.set_margin_start(12)
-        sidebar_title.set_margin_end(12)
-        sidebar.append(sidebar_title)
-
-        # Список пунктов меню (потом станет деревом заметок)
         self.menu_list = Gtk.ListBox()
         self.menu_list.add_css_class("navigation-sidebar")
         self.menu_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.menu_list.connect("row-activated", self.on_menu_action)
 
         menu_items = [
-            ("new",     "📄  Новая заметка"),
+            ("new",     "📄  Новая"),
             ("open",    "📂  Открыть"),
-            ("save",    "💾  Сохранить"),
             ("save_as", "💾  Сохранить как…"),
         ]
 
@@ -50,10 +53,10 @@ class RightNoteApp(Adw.Application):
             row = Gtk.ListBoxRow()
             row.action_id = action_id
             lbl = Gtk.Label(label=label, xalign=0)
-            lbl.set_margin_top(8)
-            lbl.set_margin_bottom(8)
-            lbl.set_margin_start(12)
-            lbl.set_margin_end(12)
+            lbl.set_margin_top(6)
+            lbl.set_margin_bottom(6)
+            lbl.set_margin_start(10)
+            lbl.set_margin_end(10)
             row.set_child(lbl)
             self.menu_list.append(row)
 
@@ -61,44 +64,78 @@ class RightNoteApp(Adw.Application):
         sidebar_scroll.set_child(self.menu_list)
         sidebar_scroll.set_vexpand(True)
         sidebar.append(sidebar_scroll)
-        sidebar.set_size_request(230, -1)
-
+        sidebar.set_size_request(160, -1)
         main.set_start_child(sidebar)
 
-        # ---- РЕДАКТОР ----
+        # ---- Редактор ----
         editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.text_view = Gtk.TextView()
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.text_view.set_margin_top(12)
-        self.text_view.set_margin_bottom(12)
-        self.text_view.set_margin_start(12)
-        self.text_view.set_margin_end(12)
+        self.text_view.set_margin_top(10)
+        self.text_view.set_margin_bottom(10)
+        self.text_view.set_margin_start(10)
+        self.text_view.set_margin_end(10)
+        self.text_view.get_buffer().connect("changed", self.on_text_changed)
 
         editor_scroll = Gtk.ScrolledWindow()
         editor_scroll.set_child(self.text_view)
         editor_box.append(editor_scroll)
         main.set_end_child(editor_box)
 
-        self.current_file = None
+        # Загружаем последнюю заметку
+        self.load_from(self.current_file)
+        self.update_title()
+
+        # Автосохранение каждые 2 секунды
+        GLib.timeout_add_seconds(2, self.auto_save)
+
         self.win.present()
 
-    # ---- Обработка меню ----
+    def update_title(self):
+        name = os.path.basename(self.current_file)
+        if name == "current.rnote":
+            self.win.set_title("Right Note")
+        else:
+            self.win.set_title(f"Right Note — {name}")
+
+    def on_text_changed(self, buf):
+        self.dirty = True
+
+    def auto_save(self):
+        if self.dirty:
+            self._write_file(self.current_file)
+            self.dirty = False
+        return True  # таймер продолжает работать
+
+    def on_close(self, window):
+        if self.dirty:
+            self._write_file(self.current_file)
+        return False  # разрешаем закрытие
+
     def on_menu_action(self, listbox, row):
         action = row.action_id
         if action == "new":
             self.new_note()
         elif action == "open":
             self.open_file()
-        elif action == "save":
-            self.save_file()
         elif action == "save_as":
             self.save_file_as()
 
-    # ---- Действия ----
     def new_note(self):
         self.text_view.get_buffer().set_text("")
-        self.current_file = None
-        self.win.set_title("Right Note — Новая заметка")
+        self.current_file = DEFAULT_FILE
+        self.update_title()
+
+    def load_from(self, path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.text_view.get_buffer().set_text(data.get("body", ""))
+            self.dirty = False
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            print("Ошибка загрузки:", e)
 
     def open_file(self):
         dialog = Gtk.FileDialog()
@@ -117,20 +154,9 @@ class RightNoteApp(Adw.Application):
         except GLib.Error:
             return
         path = file.get_path()
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            self.text_view.get_buffer().set_text(data.get("body", ""))
-            self.current_file = path
-            self.win.set_title(f"Right Note — {os.path.basename(path)}")
-        except Exception as e:
-            print("Ошибка открытия:", e)
-
-    def save_file(self):
-        if self.current_file is None:
-            self.save_file_as()
-            return
-        self._write_file(self.current_file)
+        self.current_file = path
+        self.load_from(path)
+        self.update_title()
 
     def save_file_as(self):
         dialog = Gtk.FileDialog()
@@ -146,9 +172,10 @@ class RightNoteApp(Adw.Application):
         path = file.get_path()
         if not path.endswith(".rnote"):
             path += ".rnote"
-        self._write_file(path)
         self.current_file = path
-        self.win.set_title(f"Right Note — {os.path.basename(path)}")
+        self._write_file(path)
+        self.dirty = False
+        self.update_title()
 
     def _write_file(self, path):
         buf = self.text_view.get_buffer()
