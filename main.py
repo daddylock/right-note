@@ -15,7 +15,7 @@ try:
     from gi.repository import WebKit
     WEBKIT_AVAILABLE = True
 except (ValueError, ImportError):
-    print("⚠️ WebKit 6.0 не найден.")
+    print("⚠️ WebKit 6.0 не найден. Просмотр Markdown будет отключен.")
 
 from gi.repository import Gtk, Adw, Gio, GLib, Gdk
 
@@ -179,7 +179,7 @@ class RightNoteApp(Adw.Application):
         self.pending_select = None
         self.hotkey_listener = None
         self.win = None
-        self.webapp_win = None # Окно веб-панели
+        self.webapp_win = None 
         
         self.config = self._load_config()
         if "hotkey_combo" not in self.config: self.config["hotkey_combo"] = "<ctrl>+<alt>+n"
@@ -191,9 +191,17 @@ class RightNoteApp(Adw.Application):
 
     def on_command_line(self, app, command_line):
         args = command_line.get_arguments()
-        if len(args) > 1 and args[1] == "--add-clipboard":
-            self.trigger_add_clipboard()
-            return 0
+        if len(args) > 1:
+            arg = args[1]
+            if arg == "--add-clipboard":
+                self.trigger_add_clipboard()
+                return 0
+            elif arg.endswith(".rnote"):
+                if os.path.exists(arg):
+                    self.activate() 
+                    self.load_file(arg)
+                return 0
+                
         self.activate()
         return 0
 
@@ -267,7 +275,6 @@ class RightNoteApp(Adw.Application):
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
 
-        # Основной макет теперь только Сайдбар + Редактор
         main_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         main_paned.set_position(250)
         main_paned.set_resize_start_child(False)
@@ -277,7 +284,6 @@ class RightNoteApp(Adw.Application):
         toolbar_view.set_content(main_paned)
         self.win.set_content(toolbar_view)
 
-        # --- ЛЕВАЯ ЧАСТЬ: САЙДБАР ---
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         sidebar.add_css_class("sidebar-box")
         sidebar.add_css_class("floating-panel")
@@ -329,7 +335,6 @@ class RightNoteApp(Adw.Application):
         sidebar.append(notes_scroll)
         main_paned.set_start_child(sidebar)
 
-        # --- ПРАВАЯ ЧАСТЬ: РЕДАКТОР ---
         editor_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_container.add_css_class("editor-container")
         editor_container.set_hexpand(True)
@@ -412,13 +417,11 @@ class RightNoteApp(Adw.Application):
         self.restart_hotkey_listener()
         self.win.present()
 
-        # --- WEBAPP (ОТДЕЛЬНОЕ ОКНО) ---
     def create_webapp_window(self):
         self.webapp_win = Adw.Window(transient_for=self.win)
         self.webapp_win.set_default_size(450, 700)
         self.webapp_win.set_title("Веб-панель")
         
-        # Обработка закрытия окна крестиком
         def on_webapp_close(*args):
             self.btn_webapp.set_active(False)
             self.webapp_win = None
@@ -426,7 +429,6 @@ class RightNoteApp(Adw.Application):
             
         self.webapp_win.connect("close-request", on_webapp_close)
 
-        # Создаем шапку (HeaderBar), за которую можно будет таскать окно
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         header.set_show_title(True)
@@ -434,7 +436,6 @@ class RightNoteApp(Adw.Application):
 
         if WEBKIT_AVAILABLE:
             self.webapp_view = WebKit.WebView(network_session=self.network_session)
-            # Кладем веб-вьюху внутрь ToolbarView, а не напрямую в окно
             toolbar_view.set_content(self.webapp_view)
             self.load_webapp_url()
 
@@ -456,7 +457,6 @@ class RightNoteApp(Adw.Application):
             if self.webapp_win:
                 self.webapp_win.close()
 
-    # --- ССЫЛКИ И ВНУТРЕННИЙ БРАУЗЕР ---
     def on_decide_policy(self, web_view, decision, decision_type):
         if decision_type == WebKit.PolicyDecisionType.NAVIGATION_ACTION:
             nav_action = decision.get_navigation_action()
@@ -473,7 +473,6 @@ class RightNoteApp(Adw.Application):
                     self.btn_back.set_visible(True)
         return False
 
-    # --- ЛОГИКА ЧЕК-ЛИСТА И ENTER ---
     def on_key_pressed(self, controller, keyval, keycode, state):
         if keyval == Gdk.KEY_Return:
             buf = self.text_view.get_buffer()
@@ -565,7 +564,6 @@ class RightNoteApp(Adw.Application):
             buf.place_cursor(cursor_iter)
         self.text_view.grab_focus()
 
-    # --- АНИМАЦИЯ ГЛАЗА ---
     def on_view_toggled(self, btn):
         if btn.get_active():
             self.animate_paned(0)
