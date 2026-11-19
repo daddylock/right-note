@@ -11,90 +11,17 @@ NOTES_DIR = os.path.expanduser("~/RightNote")
 CONFIG_DIR = os.path.expanduser("~/.local/share/right-note")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
-# --- КРЕАТИВНЫЙ CSS ---
-CUSTOM_CSS = """
-/* Общие настройки */
-window {
-    background-color: @theme_bg_color;
-}
-
-/* Плавающие панели (Сайдбар и Редактор) */
-.floating-panel {
-    margin: 12px;
-    border-radius: 16px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
-    border: 1px solid rgba(255,255,255,0.05);
-}
-
-/* Сайдбар */
-.sidebar-box {
-    background-color: @theme_base_color;
-}
-.sidebar-btn {
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    margin: 3px;
-    transition: all 150ms ease-in-out;
-}
-.sidebar-btn:hover {
-    background: rgba(125, 125, 125, 0.15);
-}
-
-/* Строки заметок */
-.note-row {
-    padding: 12px;
-    margin: 4px 10px;
-    border-radius: 10px;
-    transition: all 150ms ease-in-out;
-    color: @theme_fg_color;
-}
-.note-row:selected {
-    background: linear-gradient(135deg, #7b61ff, #458af5);
-    color: #ffffff;
-    box-shadow: 0 2px 8px rgba(123, 97, 255, 0.4);
-}
-
-/* Контейнер редактора */
-.editor-container {
-    background-color: transparent;
-}
-.editor-card {
-    background-color: @theme_base_color;
-    border-radius: 16px;
-    margin: 0;
-}
-
-/* Текст */
-.note-text {
-    background: transparent;
-    color: @theme_fg_color;
-    font-family: "Inter", "Cantarell", sans-serif;
-    font-size: 16px;
-    padding: 24px;
-    line-height: 1.6;
-}
-.note-text text {
-    background-color: transparent;
-}
-
-/* Шапка */
-headerbar {
-    background: transparent;
-    box-shadow: none;
-    border: none;
-}
-
-/* Разделитель (скрываем, так как панели плавающие) */
-paned > separator {
-    min-width: 0px;
-    background: transparent;
-}
-"""
-
 def load_css():
+    # Ищем style.css в той же папке, где лежит main.py
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    css_path = os.path.join(base_dir, "style.css")
+    
+    if not os.path.exists(css_path):
+        print(f"⚠️ Внимание: Файл {css_path} не найден. Дизайн будет стандартным.")
+        return
+
     provider = Gtk.CssProvider()
-    provider.load_from_data(CUSTOM_CSS.encode('utf-8'))
+    provider.load_from_path(css_path)
     display = Gdk.Display.get_default()
     Gtk.StyleContext.add_provider_for_display(
         display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
@@ -134,7 +61,7 @@ class RightNoteApp(Adw.Application):
             self.quit()
 
     def on_activate(self, app):
-        load_css()
+        load_css() # Загружаем стили из файла
 
         self.win = Adw.ApplicationWindow(application=app)
         self.win.set_default_size(750, 550)
@@ -143,12 +70,12 @@ class RightNoteApp(Adw.Application):
         header = Adw.HeaderBar()
         self.save_label = Gtk.Label(label="Сохранено")
         self.save_label.add_css_class("dim-label")
+        self.save_label.add_css_class("save-status") # Добавили класс для анимации
         header.pack_end(self.save_label)
 
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
 
-        # Главный контейнер (Paned)
         main = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         main.set_position(250)
         main.set_resize_start_child(False)
@@ -158,13 +85,12 @@ class RightNoteApp(Adw.Application):
         toolbar_view.set_content(main)
         self.win.set_content(toolbar_view)
 
-        # --- САЙДБАР (Плавающая панель) ---
+        # --- САЙДБАР ---
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         sidebar.add_css_class("sidebar-box")
         sidebar.add_css_class("floating-panel")
         sidebar.set_size_request(200, -1)
 
-        # Кнопки (без фона, аккуратные)
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
         btn_box.set_margin_top(10)
         btn_box.set_margin_bottom(10)
@@ -224,7 +150,7 @@ class RightNoteApp(Adw.Application):
 
         main.set_start_child(sidebar)
 
-        # --- РЕДАКТОР (Плавающая панель) ---
+        # --- РЕДАКТОР ---
         editor_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_container.add_css_class("editor-container")
         editor_container.set_hexpand(True)
@@ -258,7 +184,6 @@ class RightNoteApp(Adw.Application):
 
         self.win.present()
 
-    # ---------- Логика именования ----------
     def _get_next_note_path(self):
         base = "Новая заметка"
         path = os.path.join(NOTES_DIR, f"{base}.rnote")
@@ -273,7 +198,6 @@ class RightNoteApp(Adw.Application):
                 return path, name
             counter += 1
 
-    # ---------- Дерево ----------
     def _load_dir(self, file):
         store = Gio.ListStore.new(Gio.File)
         try:
@@ -405,7 +329,6 @@ class RightNoteApp(Adw.Application):
             self._save_current()
             self.load_file(path)
 
-    # ---------- Действия ----------
     def _get_body(self):
         buf = self.text_view.get_buffer()
         return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)

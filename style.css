@@ -1,0 +1,94 @@
+/* === БАЗОВЫЕ НАСТРОЙКИ === */
+window {
+    background-color: @theme_bg_color;
+}
+
+/* === ПЛАВАЮЩИЕ ПАНЕЛИ === */
+.floating-panel {
+    margin: 12px;
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+    border: 1px solid rgba(255,255,255,0.05);
+    transition: box-shadow 300ms ease-in-out;
+}
+
+/* === САЙДБАР === */
+.sidebar-box {
+    background-color: @theme_base_color;
+}
+
+/* Кнопки с анимацией нажатия */
+.sidebar-btn {
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    margin: 3px;
+    transition: all 150ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+.sidebar-btn:hover {
+    background: rgba(125, 125, 125, 0.15);
+    transform: scale(0.95);
+}
+.sidebar-btn:active {
+    transform: scale(0.9);
+}
+
+/* === СТРОКИ ЗАМЕТОК === */
+.note-row {
+    padding: 12px;
+    margin: 4px 10px;
+    border-radius: 10px;
+    color: @theme_fg_color;
+    transition: all 200ms cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+/* Плавное появление градиента при выборе */
+.note-row:selected {
+    background: linear-gradient(135deg, #7b61ff, #458af5);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(123, 97, 255, 0.4);
+    transform: scale(1.02); /* Легкое увеличение выбранной заметки */
+}
+
+/* === РЕДАКТОР === */
+.editor-container {
+    background-color: transparent;
+}
+.editor-card {
+    background-color: @theme_base_color;
+    border-radius: 16px;
+    margin: 0;
+}
+
+/* Поле ввода с анимацией фокуса */
+.note-text {
+    background: transparent;
+    color: @theme_fg_color;
+    font-family: "Inter", "Cantarell", sans-serif;
+    font-size: 16px;
+    padding: 24px;
+    line-height: 1.6;
+    transition: background-color 200ms ease;
+}
+.note-text text {
+    background-color: transparent;
+}
+
+/* === ШАПКА И ИНДИКАТОР === */
+headerbar {
+    background: transparent;
+    box-shadow: none;
+    border: none;
+}
+
+/* Анимация текста сохранения */
+.save-status {
+    transition: all 300ms ease-in-out;
+    font-size: 13px;
+}
+
+/* === РАЗДЕЛИТЕЛЬ === */
+paned > separator {
+    min-width: 0px;
+    background: transparent;
+}
