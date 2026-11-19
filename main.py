@@ -1,6 +1,4 @@
 import os
-os.environ["GTK_THEME"] = "Adwaita"
-
 import gi
 import json
 import datetime
@@ -13,81 +11,84 @@ NOTES_DIR = os.path.expanduser("~/RightNote")
 CONFIG_DIR = os.path.expanduser("~/.local/share/right-note")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
-# --- ОБНОВЛЕННЫЙ CSS ДЛЯ КРАСОТЫ ---
+# --- КРЕАТИВНЫЙ CSS ---
 CUSTOM_CSS = """
+/* Общие настройки */
 window {
     background-color: @theme_bg_color;
 }
 
-/* Сайдбар теперь как карточка */
-.sidebar-box {
-    background-color: alpha(@theme_fg_color, 0.03);
-    margin: 8px 4px 8px 8px;
-    border-radius: 12px;
-    border: 1px solid alpha(@theme_fg_color, 0.08);
+/* Плавающие панели (Сайдбар и Редактор) */
+.floating-panel {
+    margin: 12px;
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+    border: 1px solid rgba(255,255,255,0.05);
 }
 
-/* Кнопки в сайдбаре */
+/* Сайдбар */
+.sidebar-box {
+    background-color: @theme_base_color;
+}
 .sidebar-btn {
     background: transparent;
     border: none;
-    border-radius: 6px;
-    margin: 2px;
+    border-radius: 8px;
+    margin: 3px;
+    transition: all 150ms ease-in-out;
 }
 .sidebar-btn:hover {
-    background: alpha(@theme_fg_color, 0.1);
+    background: rgba(125, 125, 125, 0.15);
 }
 
-/* Строки в списке заметок */
+/* Строки заметок */
 .note-row {
-    padding: 8px 12px;
-    margin: 2px 6px;
-    border-radius: 8px;
+    padding: 12px;
+    margin: 4px 10px;
+    border-radius: 10px;
+    transition: all 150ms ease-in-out;
+    color: @theme_fg_color;
 }
 .note-row:selected {
-    background-color: alpha(@theme_selected_bg_color, 0.9);
-    color: @theme_selected_fg_color;
+    background: linear-gradient(135deg, #7b61ff, #458af5);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(123, 97, 255, 0.4);
 }
 
-/* Контейнер редактора (отступы от краев) */
+/* Контейнер редактора */
 .editor-container {
-    padding: 8px 8px 8px 0;
+    background-color: transparent;
 }
-
-/* Само поле ввода (как карточка) */
-.note-text {
-    font-size: 15px;
-    font-family: "Cantarell", "Inter", sans-serif;
-    padding: 24px;
-    border-radius: 12px;
-    border: 1px solid alpha(@theme_fg_color, 0.08);
+.editor-card {
     background-color: @theme_base_color;
+    border-radius: 16px;
+    margin: 0;
 }
 
-/* Разделитель (почти невидимый) */
-paned > separator {
-    min-width: 2px;
+/* Текст */
+.note-text {
+    background: transparent;
+    color: @theme_fg_color;
+    font-family: "Inter", "Cantarell", sans-serif;
+    font-size: 16px;
+    padding: 24px;
+    line-height: 1.6;
+}
+.note-text text {
     background-color: transparent;
 }
 
-@media (prefers-color-scheme: dark) {
-    .note-text {
-        background-color: #1e1e1e;
-        color: #e0e0e0;
-    }
-    window {
-        background-color: #121212;
-    }
+/* Шапка */
+headerbar {
+    background: transparent;
+    box-shadow: none;
+    border: none;
 }
 
-@media (prefers-color-scheme: light) {
-    .note-text {
-        background-color: #ffffff;
-        color: #1e1e1e;
-    }
-    window {
-        background-color: #f5f5f5;
-    }
+/* Разделитель (скрываем, так как панели плавающие) */
+paned > separator {
+    min-width: 0px;
+    background: transparent;
 }
 """
 
@@ -110,7 +111,7 @@ class RightNoteApp(Adw.Application):
         self.dirty = False
         self.is_loading = False
         self.current_file = None
-        self.pending_select = None  # Для переключения после удаления
+        self.pending_select = None
 
     def _setup_actions(self):
         actions = [
@@ -136,7 +137,7 @@ class RightNoteApp(Adw.Application):
         load_css()
 
         self.win = Adw.ApplicationWindow(application=app)
-        self.win.set_default_size(650, 500)
+        self.win.set_default_size(750, 550)
         self.win.connect("close-request", self.on_close)
 
         header = Adw.HeaderBar()
@@ -147,8 +148,9 @@ class RightNoteApp(Adw.Application):
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
 
+        # Главный контейнер (Paned)
         main = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        main.set_position(220)
+        main.set_position(250)
         main.set_resize_start_child(False)
         main.set_wide_handle(True)
         main.set_vexpand(True)
@@ -156,35 +158,42 @@ class RightNoteApp(Adw.Application):
         toolbar_view.set_content(main)
         self.win.set_content(toolbar_view)
 
-        # ---- САЙДБАР ----
+        # --- САЙДБАР (Плавающая панель) ---
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         sidebar.add_css_class("sidebar-box")
-        sidebar.set_size_request(160, -1)
+        sidebar.add_css_class("floating-panel")
+        sidebar.set_size_request(200, -1)
 
-        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        btn_box.set_margin_top(8)
-        btn_box.set_margin_bottom(8)
-        btn_box.set_margin_start(8)
-        btn_box.set_margin_end(8)
+        # Кнопки (без фона, аккуратные)
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        btn_box.set_margin_top(10)
+        btn_box.set_margin_bottom(10)
+        btn_box.set_margin_start(10)
+        btn_box.set_margin_end(10)
+        btn_box.set_homogeneous(True)
 
         btn_new = Gtk.Button(icon_name="document-new-symbolic")
         btn_new.set_tooltip_text("Новая заметка (Ctrl+N)")
         btn_new.add_css_class("sidebar-btn")
+        btn_new.add_css_class("flat")
         btn_new.connect("clicked", lambda _: self.new_note())
         
         btn_open = Gtk.Button(icon_name="document-open-symbolic")
         btn_open.set_tooltip_text("Открыть заметку (Ctrl+O)")
         btn_open.add_css_class("sidebar-btn")
+        btn_open.add_css_class("flat")
         btn_open.connect("clicked", lambda _: self.open_file())
         
         btn_save = Gtk.Button(icon_name="document-save-as-symbolic")
         btn_save.set_tooltip_text("Сохранить как... (Ctrl+Shift+S)")
         btn_save.add_css_class("sidebar-btn")
+        btn_save.add_css_class("flat")
         btn_save.connect("clicked", lambda _: self.save_file_as())
 
         btn_del = Gtk.Button(icon_name="user-trash-symbolic")
         btn_del.set_tooltip_text("Удалить заметку (Ctrl+Delete)")
         btn_del.add_css_class("sidebar-btn")
+        btn_del.add_css_class("flat")
         btn_del.connect("clicked", lambda _: self.delete_note())
 
         btn_box.append(btn_new)
@@ -193,12 +202,6 @@ class RightNoteApp(Adw.Application):
         btn_box.append(btn_del)
         sidebar.append(btn_box)
 
-        sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sep.set_margin_top(4)
-        sep.set_margin_bottom(4)
-        sidebar.append(sep)
-
-        # ---- ДЕРЕВО ----
         self.notes_dir = Gio.File.new_for_path(NOTES_DIR)
         self.notes_store = self._load_dir(self.notes_dir)
         self.tree_model = Gtk.TreeListModel.new(self.notes_store, False, False, self._create_child_model)
@@ -215,25 +218,30 @@ class RightNoteApp(Adw.Application):
         notes_scroll = Gtk.ScrolledWindow()
         notes_scroll.set_child(self.list_view)
         notes_scroll.set_vexpand(True)
+        notes_scroll.set_margin_top(4)
+        notes_scroll.set_margin_bottom(8)
         sidebar.append(notes_scroll)
 
         main.set_start_child(sidebar)
 
-        # ---- РЕДАКТОР ----
+        # --- РЕДАКТОР (Плавающая панель) ---
         editor_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_container.add_css_class("editor-container")
         editor_container.set_hexpand(True)
         editor_container.set_vexpand(True)
 
+        editor_scroll = Gtk.ScrolledWindow()
+        editor_scroll.add_css_class("editor-card")
+        editor_scroll.add_css_class("floating-panel")
+        editor_scroll.set_hexpand(True)
+        editor_scroll.set_vexpand(True)
+
         self.text_view = Gtk.TextView()
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.text_view.add_css_class("note-text") # Класс для красоты
+        self.text_view.add_css_class("note-text")
         self.text_view.get_buffer().connect("changed", self.on_text_changed)
 
-        editor_scroll = Gtk.ScrolledWindow()
         editor_scroll.set_child(self.text_view)
-        editor_scroll.set_vexpand(True)
-        editor_scroll.set_hexpand(True)
         editor_container.append(editor_scroll)
         main.set_end_child(editor_container)
 
@@ -296,7 +304,6 @@ class RightNoteApp(Adw.Application):
                 self.notes_store.append(f)
             self.is_loading = False
             
-            # Если мы удалили заметку, переключаемся на следующую
             if self.pending_select is not None:
                 idx = self.pending_select
                 self.pending_select = None
@@ -305,7 +312,6 @@ class RightNoteApp(Adw.Application):
                         self.is_loading = True
                         self.selection_model.set_selected(idx)
                         self.is_loading = False
-                        # Загружаем принудительно, если смена выделения не сработала
                         tree_row = self.tree_model.get_item(idx)
                         if tree_row:
                             f = tree_row.get_item()
@@ -327,13 +333,11 @@ class RightNoteApp(Adw.Application):
                 GLib.idle_add(select_current)
 
     def _setup_tree_item(self, factory, list_item):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         box.add_css_class("note-row")
-        expander = Gtk.TreeExpander()
         image = Gtk.Image()
         label = Gtk.Label(xalign=0)
         label.set_ellipsize(3)
-        box.append(expander)
         box.append(image)
         box.append(label)
         
@@ -345,21 +349,16 @@ class RightNoteApp(Adw.Application):
 
     def _bind_tree_item(self, factory, list_item):
         box = list_item.get_child()
-        expander = box.get_first_child()
-        image = expander.get_next_sibling()
+        image = box.get_first_child()
         label = image.get_next_sibling()
         
         tree_row = list_item.get_item()
         file = tree_row.get_item()
         
-        expander.set_list_row(tree_row)
-        
         if file.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.DIRECTORY:
-            expander.set_hide_expander(False)
             image.set_from_icon_name("folder-symbolic")
             label.set_text(file.get_basename())
         else:
-            expander.set_hide_expander(True)
             image.set_from_icon_name("text-x-generic-symbolic")
             name = file.get_basename()
             if name.endswith(".rnote"):
@@ -474,9 +473,7 @@ class RightNoteApp(Adw.Application):
         selected = self.selection_model.get_selected()
         n_items = self.notes_store.get_n_items()
         
-        # Определяем, какую заметку выделить после удаления
         if n_items > 1:
-            # Если удаляем последнюю в списке, выделяем предыдущую
             self.pending_select = selected if selected < n_items - 1 else n_items - 2
         else:
             self.pending_select = -1
@@ -494,7 +491,6 @@ class RightNoteApp(Adw.Application):
         self.is_loading = False
         self.dirty = False
         
-        # Если удалили всё, создаем новую
         if self.pending_select == -1:
             self.new_note()
 
