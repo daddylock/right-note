@@ -1,44 +1,124 @@
 import os
+import sys
 import gi
 import json
 import datetime
+import subprocess
 
+# Жестко требуем GTK 4 и Adwaita
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
+
+# Пытаемся подключить WebKit 6.0 (для GTK4)
+WEBKIT_AVAILABLE = False
+try:
+    gi.require_version('WebKit', '6.0')
+    from gi.repository import WebKit
+    WEBKIT_AVAILABLE = True
+except (ValueError, ImportError):
+    print("⚠️ WebKit 6.0 не найден. Просмотр Markdown будет отключен.")
+
 from gi.repository import Gtk, Adw, Gio, GLib, Gdk
+
+# Импорты для работы с текстом и хоткеями
+try:
+    from pynput import keyboard
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+
+try:
+    import pyperclip
+    PYPERCLIP_AVAILABLE = True
+except ImportError:
+    PYPERCLIP_AVAILABLE = False
+
+try:
+    import markdown
+    MARKDOWN_AVAILABLE = True
+except ImportError:
+    MARKDOWN_AVAILABLE = False
 
 NOTES_DIR = os.path.expanduser("~/RightNote")
 CONFIG_DIR = os.path.expanduser("~/.local/share/right-note")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
 def load_css():
-    # Ищем style.css в той же папке, где лежит main.py
     base_dir = os.path.dirname(os.path.abspath(__file__))
     css_path = os.path.join(base_dir, "style.css")
-    
-    if not os.path.exists(css_path):
-        print(f"⚠️ Внимание: Файл {css_path} не найден. Дизайн будет стандартным.")
-        return
+    if os.path.exists(css_path):
+        provider = Gtk.CssProvider()
+        provider.load_from_path(css_path)
+        Gtk.StyleContext.add_provider_for_display(
+            Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
 
-    provider = Gtk.CssProvider()
-    provider.load_from_path(css_path)
-    display = Gdk.Display.get_default()
-    Gtk.StyleContext.add_provider_for_display(
-        display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-    )
+class SettingsWindow(Adw.PreferencesWindow):
+    def __init__(self, parent_app):
+        super().__init__(transient_for=parent_app.win, modal=True)
+        self.app = parent_app
+        self.set_title("Настройки")
+        self.set_default_size(400, 300)
+
+        page = Adw.PreferencesPage()
+        self.add(page)
+
+        group = Adw.PreferencesGroup(title="Глобальный хоткей")
+        page.add(group)
+
+        self.switch_enabled = Adw.SwitchRow(title="Включить хоткей")
+        self.switch_enabled.set_active(self.app.config.get("hotkey_enabled", True))
+        self.switch_enabled.connect("notify::active", self.on_switch_toggle)
+        group.add(self.switch_enabled)
+
+        self.entry_hotkey = Adw.EntryRow(title="Комбинация (например, Ctrl+Alt+N)")
+        self.entry_hotkey.set_text(self.app.config.get("hotkey_combo", "<ctrl>+<alt>+n"))
+        self.entry_hotkey.connect("changed", self.on_hotkey_changed)
+        group.add(self.entry_hotkey)
+
+    def on_switch_toggle(self, switch, pspec=None):
+        self.app.config["hotkey_enabled"] = switch.get_active()
+        self.app.save_config()
+        self.app.restart_hotkey_listener()
+
+    def on_hotkey_changed(self, entry):
+        self.app.config["hotkey_combo"] = entry.get_text()
+        self.app.save_config()
+        self.app.restart_hotkey_listener()
+
 
 class RightNoteApp(Adw.Application):
     def __init__(self):
-        super().__init__(application_id='com.daniil.rightnote')
+        super().__init__(application_id='com.daniil.rightnote',
+                         flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.connect('activate', self.on_activate)
+        self.connect('command-line', self.on_command_line)
+        
         os.makedirs(NOTES_DIR, exist_ok=True)
         os.makedirs(CONFIG_DIR, exist_ok=True)
-        self._setup_actions()
         
         self.dirty = False
         self.is_loading = False
         self.current_file = None
         self.pending_select = None
+        self.hotkey_listener = None
+        self.win = None
+        
+        self.config = self._load_config()
+        if "hotkey_combo" not in self.config:
+            self.config["hotkey_combo"] = "<ctrl>+<alt>+n"
+        if "hotkey_enabled" not in self.config:
+            self.config["hotkey_enabled"] = True
+            
+        self._setup_actions()
+
+    def on_command_line(self, app, command_line):
+        args = command_line.get_arguments()
+        if len(args) > 1 and args[1] == "--add-clipboard":
+            self.trigger_add_clipboard()
+            return 0
+        self.activate()
+        return 0
 
     def _setup_actions(self):
         actions = [
@@ -47,6 +127,7 @@ class RightNoteApp(Adw.Application):
             ("save_as",  self.save_file_as,  ["<Control><Shift>s"]),
             ("delete",   self.delete_note,   ["<Control>Delete"]),
             ("quit",     self.quit_app,      ["<Control>q"]),
+            ("settings", self.open_settings, ["<Control>comma"]),
         ]
         for name, handler, accels in actions:
             action = Gio.SimpleAction.new(name, None)
@@ -55,27 +136,41 @@ class RightNoteApp(Adw.Application):
             self.set_accels_for_action(f"app.{name}", accels)
 
     def quit_app(self):
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
         if self.win:
             self.win.close()
         else:
             self.quit()
 
-    def on_activate(self, app):
-        load_css() # Загружаем стили из файла
+    def on_activate(self, app=None):
+        if self.win:
+            self.win.present()
+            return
 
-        self.win = Adw.ApplicationWindow(application=app)
-        self.win.set_default_size(750, 550)
+        load_css()
+
+        self.win = Adw.ApplicationWindow(application=self)
+        self.win.set_default_size(850, 600)
         self.win.connect("close-request", self.on_close)
 
+        # --- ШАПКА ---
         header = Adw.HeaderBar()
+        
+        self.btn_view = Gtk.ToggleButton(icon_name="view-reveal-symbolic")
+        self.btn_view.set_tooltip_text("Переключить Редактор / Просмотр")
+        self.btn_view.connect("toggled", self.on_view_toggled)
+        header.pack_start(self.btn_view)
+
         self.save_label = Gtk.Label(label="Сохранено")
         self.save_label.add_css_class("dim-label")
-        self.save_label.add_css_class("save-status") # Добавили класс для анимации
+        self.save_label.add_css_class("save-status")
         header.pack_end(self.save_label)
 
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
 
+        # --- ОСНОВНОЙ ЛЭЙАУТ ---
         main = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         main.set_position(250)
         main.set_resize_start_child(False)
@@ -122,12 +217,20 @@ class RightNoteApp(Adw.Application):
         btn_del.add_css_class("flat")
         btn_del.connect("clicked", lambda _: self.delete_note())
 
+        btn_settings = Gtk.Button(icon_name="emblem-system-symbolic")
+        btn_settings.set_tooltip_text("Настройки (Ctrl+,)")
+        btn_settings.add_css_class("sidebar-btn")
+        btn_settings.add_css_class("flat")
+        btn_settings.connect("clicked", lambda _: self.open_settings())
+
         btn_box.append(btn_new)
         btn_box.append(btn_open)
         btn_box.append(btn_save)
         btn_box.append(btn_del)
+        btn_box.append(btn_settings)
         sidebar.append(btn_box)
 
+        # Дерево заметок
         self.notes_dir = Gio.File.new_for_path(NOTES_DIR)
         self.notes_store = self._load_dir(self.notes_dir)
         self.tree_model = Gtk.TreeListModel.new(self.notes_store, False, False, self._create_child_model)
@@ -150,25 +253,49 @@ class RightNoteApp(Adw.Application):
 
         main.set_start_child(sidebar)
 
-        # --- РЕДАКТОР ---
+        # --- РЕДАКТОР / ПРОСМОТР (STACK) ---
         editor_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_container.add_css_class("editor-container")
         editor_container.set_hexpand(True)
         editor_container.set_vexpand(True)
 
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_hexpand(True)
+        self.stack.set_vexpand(True)
+        
+        # 1. Редактор (TextView)
         editor_scroll = Gtk.ScrolledWindow()
         editor_scroll.add_css_class("editor-card")
         editor_scroll.add_css_class("floating-panel")
-        editor_scroll.set_hexpand(True)
         editor_scroll.set_vexpand(True)
-
+        editor_scroll.set_hexpand(True)
+        
         self.text_view = Gtk.TextView()
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD)
         self.text_view.add_css_class("note-text")
+        self.text_view.set_vexpand(True)
+        self.text_view.set_hexpand(True)
         self.text_view.get_buffer().connect("changed", self.on_text_changed)
-
         editor_scroll.set_child(self.text_view)
-        editor_container.append(editor_scroll)
+
+        # 2. Просмотр (WebKit 6.0)
+        if WEBKIT_AVAILABLE:
+            self.web_view = WebKit.WebView()
+            self.web_view.set_background_color(Gdk.RGBA(0, 0, 0, 0)) 
+            web_scroll = Gtk.ScrolledWindow()
+            web_scroll.add_css_class("floating-panel")
+            web_scroll.set_vexpand(True)
+            web_scroll.set_hexpand(True)
+            web_scroll.set_child(self.web_view)
+            preview_widget = web_scroll
+        else:
+            preview_widget = Gtk.Label(label="WebKit не установлен. Просмотр недоступен.")
+            preview_widget.set_margin_top(20)
+
+        self.stack.add_named(editor_scroll, "editor")
+        self.stack.add_named(preview_widget, "preview")
+        editor_container.append(self.stack)
         main.set_end_child(editor_container)
 
         self.monitor = self.notes_dir.monitor_directory(Gio.FileMonitorFlags.NONE, None)
@@ -176,14 +303,178 @@ class RightNoteApp(Adw.Application):
 
         GLib.timeout_add_seconds(2, self.auto_save)
 
-        last = self._load_config().get("last_file")
+        last = self.config.get("last_file")
         if last and os.path.exists(last):
             self.load_file(last)
         else:
             self.new_note()
 
+        self.restart_hotkey_listener()
         self.win.present()
 
+    # --- ЛОГИКА ПЕРЕКЛЮЧЕНИЯ РЕЖИМОВ ---
+    def on_view_toggled(self, btn):
+        # Используем idle_add, чтобы GTK успел выделить место и не ломал редактор
+        if btn.get_active():
+            GLib.idle_add(self.stack.set_visible_child_name, "preview")
+            GLib.idle_add(self.update_preview)
+        else:
+            GLib.idle_add(self.stack.set_visible_child_name, "editor")
+            GLib.idle_add(self.text_view.grab_focus)
+
+    def update_preview(self):
+        if not WEBKIT_AVAILABLE or not MARKDOWN_AVAILABLE:
+            return
+
+        buf = self.text_view.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        
+        html_body = markdown.markdown(text, extensions=['fenced_code', 'tables', 'nl2br'])
+        
+        is_dark = Adw.StyleManager.get_default().get_dark()
+        bg_color = "#1e1e1e" if is_dark else "#ffffff"
+        fg_color = "#e0e0e0" if is_dark else "#1a1a1a"
+        code_bg = "rgba(255,255,255,0.1)" if is_dark else "rgba(0,0,0,0.05)"
+        
+        html = f"""
+        <html>
+        <head>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                font-size: 16px;
+                line-height: 1.6;
+                color: {fg_color};
+                background-color: {bg_color};
+                padding: 24px;
+                word-wrap: break-word;
+            }}
+            h1, h2, h3, h4 {{ border-bottom: 1px solid rgba(128,128,128,0.2); padding-bottom: 0.3em; margin-top: 1.2em; }}
+            code {{ background-color: {code_bg}; padding: 0.2em 0.4em; border-radius: 4px; font-family: monospace; }}
+            pre code {{ display: block; padding: 1em; overflow: auto; }}
+            a {{ color: #3584e4; text-decoration: none; }}
+            a:hover {{ text-decoration: underline; }}
+            blockquote {{ border-left: 4px solid #3584e4; margin: 0; padding-left: 1em; color: #888; }}
+            img {{ max-width: 100%; border-radius: 8px; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid rgba(128,128,128,0.2); padding: 8px; }}
+        </style>
+        </head>
+        <body>
+        {html_body}
+        </body>
+        </html>
+        """
+        self.web_view.load_html(html, None)
+
+    # --- НАСТРОЙКИ И ХОТКЕИ ---
+    def open_settings(self):
+        if self.win:
+            SettingsWindow(self).present()
+
+    def save_config(self):
+        self._save_config(self.config)
+
+    def restart_hotkey_listener(self):
+        if not PYNPUT_AVAILABLE:
+            print("pynput не установлен. Хоткеи недоступны.")
+            return
+            
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+            self.hotkey_listener = None
+            
+        if not self.config.get("hotkey_enabled", True):
+            return
+            
+        combo = self.config.get("hotkey_combo", "<ctrl>+<alt>+n")
+        try:
+            self.hotkey_listener = keyboard.GlobalHotKeys({
+                combo: self.on_hotkey_triggered
+            })
+            self.hotkey_listener.start()
+            print(f"Хоткей {combo} активирован.")
+        except Exception as e:
+            print(f"Ошибка настройки хоткея: {e}")
+
+    def on_hotkey_triggered(self):
+        GLib.idle_add(self.trigger_add_clipboard)
+
+    def trigger_add_clipboard(self):
+        if self.win:
+            self.win.present()
+            self.btn_view.set_active(False) 
+        
+        text, is_html = self._get_clipboard_text()
+        if not text:
+            return
+            
+        if is_html:
+            try:
+                from markdownify import markdownify as md
+                final_text = md(text, heading_style="ATX")
+            except ImportError:
+                final_text = text
+        else:
+            final_text = text
+
+        self.insert_external_text(final_text)
+
+    def _get_clipboard_text(self):
+        if sys.platform == "linux":
+            try:
+                html_primary = subprocess.run(["xclip", "-o", "-selection", "primary", "-t", "text/html"], 
+                                      capture_output=True, text=True, timeout=2)
+                if html_primary.stdout:
+                    return html_primary.stdout, True
+                    
+                html_clip = subprocess.run(["xclip", "-o", "-selection", "clipboard", "-t", "text/html"], 
+                                      capture_output=True, text=True, timeout=2)
+                if html_clip.stdout:
+                    return html_clip.stdout, True
+
+                text_primary = subprocess.run(["xclip", "-o", "-selection", "primary"], 
+                                      capture_output=True, text=True, timeout=2)
+                if text_primary.stdout:
+                    return text_primary.stdout, False
+                    
+            except FileNotFoundError:
+                print("⚠️ xclip не установлен.")
+            except Exception:
+                pass
+
+        if PYPERCLIP_AVAILABLE:
+            try:
+                text = pyperclip.paste()
+                if text:
+                    return text, False
+            except Exception:
+                pass
+                
+        return "", False
+
+    def insert_external_text(self, text):
+        if not self.win:
+            self.on_activate()
+        
+        if not self.current_file:
+            self.new_note()
+            
+        buf = self.text_view.get_buffer()
+        if buf.get_char_count() > 0:
+            buf.insert_at_cursor("\n\n")
+            
+        buf.insert_at_cursor(text)
+        
+        self.win.present()
+        self.text_view.grab_focus()
+        buf.place_cursor(buf.get_end_iter())
+        self.text_view.scroll_to_iter(buf.get_end_iter(), 0.0, False, 0.0, 0.0)
+        self.dirty = True
+        self.save_label.set_text("● Не сохранено")
+        self.save_label.remove_css_class("dim-label")
+
+    # --- ФАЙЛОВЫЕ ОПЕРАЦИИ ---
     def _get_next_note_path(self):
         base = "Новая заметка"
         path = os.path.join(NOTES_DIR, f"{base}.rnote")
@@ -358,6 +649,9 @@ class RightNoteApp(Adw.Application):
         self.dirty = True
         self.save_label.set_text("● Не сохранено")
         self.save_label.remove_css_class("dim-label")
+        
+        if self.btn_view.get_active():
+            self.update_preview()
 
     def auto_save(self):
         if not self.is_loading:
@@ -368,7 +662,8 @@ class RightNoteApp(Adw.Application):
         if not self.is_loading:
             self._save_current()
         if self.current_file:
-            self._save_config({"last_file": self.current_file})
+            self.config["last_file"] = self.current_file
+            self.save_config()
         return False
 
     def new_note(self):
@@ -431,6 +726,10 @@ class RightNoteApp(Adw.Application):
             self.update_title()
             self.save_label.set_text("Сохранено ✓")
             self.save_label.add_css_class("dim-label")
+            
+            if self.btn_view.get_active():
+                self.update_preview()
+                
         except Exception as e:
             print("Ошибка загрузки:", e)
 
@@ -546,4 +845,5 @@ class RightNoteApp(Adw.Application):
             pass
 
 if __name__ == "__main__":
-    RightNoteApp().run(None)
+    app = RightNoteApp()
+    app.run(sys.argv)
