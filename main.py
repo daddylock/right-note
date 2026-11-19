@@ -412,10 +412,10 @@ class RightNoteApp(Adw.Application):
         self.restart_hotkey_listener()
         self.win.present()
 
-    # --- WEBAPP (ОТДЕЛЬНОЕ ОКНО) ---
+        # --- WEBAPP (ОТДЕЛЬНОЕ ОКНО) ---
     def create_webapp_window(self):
         self.webapp_win = Adw.Window(transient_for=self.win)
-        self.webapp_win.set_default_size(400, 700)
+        self.webapp_win.set_default_size(450, 700)
         self.webapp_win.set_title("Веб-панель")
         
         # Обработка закрытия окна крестиком
@@ -426,10 +426,19 @@ class RightNoteApp(Adw.Application):
             
         self.webapp_win.connect("close-request", on_webapp_close)
 
+        # Создаем шапку (HeaderBar), за которую можно будет таскать окно
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        header.set_show_title(True)
+        toolbar_view.add_top_bar(header)
+
         if WEBKIT_AVAILABLE:
             self.webapp_view = WebKit.WebView(network_session=self.network_session)
-            self.webapp_win.set_content(self.webapp_view)
+            # Кладем веб-вьюху внутрь ToolbarView, а не напрямую в окно
+            toolbar_view.set_content(self.webapp_view)
             self.load_webapp_url()
+
+        self.webapp_win.set_content(toolbar_view)
 
     def load_webapp_url(self):
         url = self.config.get("webapp_url", "https://chat.deepseek.com")
