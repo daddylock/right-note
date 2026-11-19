@@ -41,191 +41,198 @@ class RightNoteApp(Adw.Application):
 
     def on_activate(self, app):
         self.win = Adw.ApplicationWindow(application=app)
-        self.win.set_default_size(550, 400)
+        self.win.set_default_size(600, 450)
         self.win.connect("close-request", self.on_close)
         self.dirty = False
         self.current_file = None
 
         # ---- HeaderBar ----
         header = Adw.HeaderBar()
-        self.save_label = Gtk.Label(label="")
+        self.save_label = Gtk.Label(label="Сохранено")
         self.save_label.add_css_class("dim-label")
         header.pack_end(self.save_label)
 
         toolbar_view = Adw.ToolbarView()
         toolbar_view.add_top_bar(header)
 
-        # ---- Paned (разделитель двигается!) ----
+        # ---- Paned (разделитель) ----
         main = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        main.set_position(160)
-        main.set_resize_start_child(False)   # сайдбар не растёт сам
-        main.set_shrink_start_child(True)    # но может сжиматься
+        main.set_position(200)
+        main.set_resize_start_child(False)
         main.set_vexpand(True)
+        main.set_hexpand(True)
         toolbar_view.set_content(main)
         self.win.set_content(toolbar_view)
 
-        # ---- Сайдбар ----
+        # ---- САЙДБАР ----
         sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         sidebar.set_size_request(160, -1)
 
-        # Меню сверху
-        menu_list = Gtk.ListBox()
-        menu_list.add_css_class("navigation-sidebar")
-        menu_list.set_selection_mode(Gtk.SelectionMode.NONE)
-        menu_list.connect("row-activated", self.on_menu_action)
+        # Кнопки
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        btn_box.set_margin_top(6)
+        btn_box.set_margin_bottom(6)
+        btn_box.set_margin_start(6)
+        btn_box.set_margin_end(6)
 
-        for aid, label, shortcut in [
-            ("new",     "📄 Новая",              "<Control>n"),
-            ("open",    "📂 Открыть",            "<Control>o"),
-            ("save_as", "💾 Сохранить как…",     "<Control><Shift>s"),
-        ]:
-            menu_list.append(self._make_menu_row(aid, label, shortcut))
+        btn_new = Gtk.Button(icon_name="document-new-symbolic")
+        btn_new.set_tooltip_text("Новая заметка (Ctrl+N)")
+        btn_new.connect("clicked", lambda _: self.new_note())
+        
+        btn_open = Gtk.Button(icon_name="document-open-symbolic")
+        btn_open.set_tooltip_text("Открыть заметку (Ctrl+O)")
+        btn_open.connect("clicked", lambda _: self.open_file())
+        
+        btn_save = Gtk.Button(icon_name="document-save-as-symbolic")
+        btn_save.set_tooltip_text("Сохранить как... (Ctrl+Shift+S)")
+        btn_save.connect("clicked", lambda _: self.save_file_as())
 
-        sidebar.append(menu_list)
+        btn_box.append(btn_new)
+        btn_box.append(btn_open)
+        btn_box.append(btn_save)
+        sidebar.append(btn_box)
 
-        # Разделитель
         sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sep.set_margin_top(6)
-        sep.set_margin_bottom(6)
         sidebar.append(sep)
 
-        # Заголовок «Заметки»
-        notes_header = Gtk.Label(label="ЗАМЕТКИ", xalign=0)
-        notes_header.add_css_class("dim-label")
-        notes_header.add_css_class("caption")
-        notes_header.set_margin_start(12)
-        notes_header.set_margin_bottom(4)
-        sidebar.append(notes_header)
-
-        # Список заметок
-        self.notes_list = Gtk.ListBox()
-        self.notes_list.add_css_class("navigation-sidebar")
-        self.notes_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        self.notes_list.connect("row-selected", self.on_note_selected)
-
+        # ---- ДЕРЕВО ЗАМЕТОК ----
+        self.notes_dir = Gio.File.new_for_path(NOTES_DIR)
+        
+        # Создаем хранилище файлов
+        self.notes_store = self._load_dir(self.notes_dir)
+        
+        # Дерево
+        self.tree_model = Gtk.TreeListModel.new(self.notes_store, False, False, self._create_child_model)
+        self.selection_model = Gtk.SingleSelection.new(self.tree_model)
+        
+        factory = Gtk.SignalListItemFactory()
+        factory.connect("setup", self._setup_tree_item)
+        factory.connect("bind", self._bind_tree_item)
+        
+        self.list_view = Gtk.ListView.new(self.selection_model, factory)
+        self.list_view.connect("activate", self.on_tree_item_activated)
+        
         notes_scroll = Gtk.ScrolledWindow()
-        notes_scroll.set_child(self.notes_list)
+        notes_scroll.set_child(self.list_view)
         notes_scroll.set_vexpand(True)
         sidebar.append(notes_scroll)
 
         main.set_start_child(sidebar)
 
-        # ---- Редактор (теперь растягивается!) ----
+        # ---- РЕДАКТОР ----
         editor_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         editor_box.set_hexpand(True)
         editor_box.set_vexpand(True)
 
         self.text_view = Gtk.TextView()
         self.text_view.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.text_view.set_margin_top(10)
-        self.text_view.set_margin_bottom(10)
-        self.text_view.set_margin_start(10)
-        self.text_view.set_margin_end(10)
+        self.text_view.set_margin_top(12)
+        self.text_view.set_margin_bottom(12)
+        self.text_view.set_margin_start(12)
+        self.text_view.set_margin_end(12)
         self.text_view.get_buffer().connect("changed", self.on_text_changed)
 
         editor_scroll = Gtk.ScrolledWindow()
         editor_scroll.set_child(self.text_view)
-        editor_scroll.set_vexpand(True)   # ← ГЛАВНЫЙ ФИКС
+        editor_scroll.set_vexpand(True)
         editor_scroll.set_hexpand(True)
         editor_box.append(editor_scroll)
         main.set_end_child(editor_box)
 
-        GLib.timeout_add_seconds(2, self.auto_save)
-        self.refresh_notes_list()
+        # Мониторинг папки (чтобы дерево обновлялось само)
+        self.monitor = self.notes_dir.monitor_directory(Gio.FileMonitorFlags.NONE, None)
+        self.monitor.connect("changed", self._on_dir_changed)
 
-        # Открываем последнюю или создаём новую
+        GLib.timeout_add_seconds(2, self.auto_save)
+
         last = self._load_config().get("last_file")
         if last and os.path.exists(last):
             self.load_file(last)
         else:
-            notes = self._list_notes()
-            if notes:
-                self.load_file(notes[0])
-            else:
-                self.new_note()
+            self.new_note()
 
         self.win.present()
 
-    # ---------- Вспомогательные ----------
-    def _make_menu_row(self, action_id, label, shortcut):
-        row = Gtk.ListBoxRow()
-        row.action_id = action_id
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        lbl = Gtk.Label(label=label, xalign=0)
-        lbl.set_hexpand(True)
-        box.append(lbl)
-        if shortcut:
-            sl = Gtk.ShortcutLabel.new(shortcut)
-            sl.add_css_class("dim-label")
-            box.append(sl)
-        box.set_margin_top(6); box.set_margin_bottom(6)
-        box.set_margin_start(10); box.set_margin_end(10)
-        row.set_child(box)
-        row.set_tooltip_text(label.replace("\n", " "))
-        return row
+    # ---------- Логика дерева ----------
+    def _load_dir(self, file):
+        store = Gio.ListStore.new(Gio.File)
+        try:
+            enumerator = file.enumerate_children("standard::name,standard::type", Gio.FileQueryInfoFlags.NONE, None)
+            for info in enumerator:
+                child = file.get_child(info.get_name())
+                if info.get_file_type() == Gio.FileType.DIRECTORY:
+                    store.append(child)
+                elif info.get_file_type() == Gio.FileType.REGULAR and child.get_basename().endswith(".rnote"):
+                    store.append(child)
+        except Exception as e:
+            print("Ошибка чтения папки:", e)
+        return store
 
-    def _list_notes(self):
-        if not os.path.isdir(NOTES_DIR):
-            return []
-        files = [os.path.join(NOTES_DIR, f) for f in os.listdir(NOTES_DIR)
-                 if f.endswith(".rnote")]
-        files.sort(key=os.path.getmtime, reverse=True)
-        return files
+    def _create_child_model(self, file):
+        if file.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.DIRECTORY:
+            return self._load_dir(file)
+        return None
 
-    def refresh_notes_list(self):
-        child = self.notes_list.get_first_child()
-        while child:
-            nxt = child.get_next_sibling()
-            self.notes_list.remove(child)
-            child = nxt
-        for path in self._list_notes():
-            row = Gtk.ListBoxRow()
-            row.file_path = path
-            name = os.path.splitext(os.path.basename(path))[0]
-            lbl = Gtk.Label(label=f"📄 {name}", xalign=0)
-            lbl.set_ellipsize(3)  # Pango.EllipsizeMode.END
-            lbl.set_margin_top(6); lbl.set_margin_bottom(6)
-            lbl.set_margin_start(10); lbl.set_margin_end(10)
-            row.set_child(lbl)
-            self.notes_list.append(row)
-        # Выделяем текущую
-        if self.current_file:
-            child = self.notes_list.get_first_child()
-            while child:
-                if getattr(child, "file_path", None) == self.current_file:
-                    self.notes_list.select_row(child)
-                    break
-                child = child.get_next_sibling()
+    def _on_dir_changed(self, monitor, file, other_file, event_type):
+        if event_type in (Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.DELETED):
+            new_store = self._load_dir(self.notes_dir)
+            self.notes_store.remove_all()
+            for f in new_store:
+                self.notes_store.append(f)
+
+    def _setup_tree_item(self, factory, list_item):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        expander = Gtk.TreeExpander()
+        image = Gtk.Image()
+        label = Gtk.Label(xalign=0)
+        label.set_ellipsize(3)
+        box.append(expander)
+        box.append(image)
+        box.append(label)
+        list_item.set_child(box)
+
+    def _bind_tree_item(self, factory, list_item):
+        box = list_item.get_child()
+        expander = box.get_first_child()
+        image = expander.get_next_sibling()
+        label = image.get_next_sibling()
+        
+        tree_row = list_item.get_item()
+        file = tree_row.get_item() # Это Gio.File
+        
+        expander.set_list_row(tree_row)
+        
+        if file.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.DIRECTORY:
+            expander.set_hide_expander(False)
+            image.set_from_icon_name("folder-symbolic")
+            label.set_text(file.get_basename())
+        else:
+            expander.set_hide_expander(True)
+            image.set_from_icon_name("text-x-generic-symbolic")
+            name = file.get_basename()
+            if name.endswith(".rnote"):
+                name = name[:-6]
+            label.set_text(name)
+
+    def on_tree_item_activated(self, list_view, position):
+        model = list_view.get_model()
+        tree_row = model.get_item(position)
+        file = tree_row.get_item()
+        if file.query_file_type(Gio.FileQueryInfoFlags.NONE, None) == Gio.FileType.REGULAR:
+            self.load_file(file.get_path())
 
     # ---------- Обработчики ----------
-    def on_menu_action(self, listbox, row):
-        if row is None:
-            return
-        {"new": self.new_note,
-         "open": self.open_file,
-         "save_as": self.save_file_as}[row.action_id]()
-
-    def on_note_selected(self, listbox, row):
-        if row is None or not hasattr(row, "file_path"):
-            return
-        if row.file_path == self.current_file:
-            return
-        if self.dirty and self.current_file:
-            self._write_file(self.current_file)
-        self.load_file(row.file_path)
-
     def on_text_changed(self, buf):
         self.dirty = True
         self.save_label.set_text("● Не сохранено")
-        self.save_label.remove_css_class("success")
+        self.save_label.remove_css_class("dim-label")
 
     def auto_save(self):
         if self.dirty and self.current_file:
             self._write_file(self.current_file)
             self.dirty = False
-            self.save_label.set_text("✓ Сохранено")
-            self.save_label.add_css_class("success")
-            self.refresh_notes_list()
+            self.save_label.set_text("Сохранено ✓")
+            self.save_label.add_css_class("dim-label")
         return True
 
     def on_close(self, window):
@@ -250,9 +257,7 @@ class RightNoteApp(Adw.Application):
         self._write_file(path)
         self.dirty = False
         self.update_title()
-        self.refresh_notes_list()
-        self.save_label.set_text("✓ Сохранено")
-        self.save_label.add_css_class("success")
+        self.save_label.set_text("Сохранено ✓")
         self.text_view.grab_focus()
 
     def load_file(self, path):
@@ -263,9 +268,8 @@ class RightNoteApp(Adw.Application):
             self.current_file = path
             self.dirty = False
             self.update_title()
-            self.save_label.set_text("✓ Сохранено")
-            self.save_label.add_css_class("success")
-            self.refresh_notes_list()
+            self.save_label.set_text("Сохранено ✓")
+            self.save_label.add_css_class("dim-label")
         except Exception as e:
             print("Ошибка загрузки:", e)
 
@@ -312,7 +316,6 @@ class RightNoteApp(Adw.Application):
         self._write_file(path)
         self.dirty = False
         self.update_title()
-        self.refresh_notes_list()
 
     # ---------- Запись / конфиг ----------
     def _write_file(self, path):
